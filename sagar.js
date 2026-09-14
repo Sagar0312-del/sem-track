@@ -1,43 +1,140 @@
 /* =====================================================
-   SEM TRACKER — sagar.js
-   Sab logic ek hi file mein: subjects, topics, exams,
-   progress calculation, localStorage, aur graph.
+   SEM TRACKER — sagar.js (SUPABASE CLOUD VERSION)
    ===================================================== */
 
-(function () {
+(async function () {
   "use strict";
 
-  const STORAGE_KEY = "semTrackerData";
+  let currentUser = null;
+  let state = { subjects: [], exams: [], dailyLog: {}, activeSubjectId: null };
 
-  let state = loadState();
+  const authOverlay = document.getElementById("authOverlay");
+  const mainApp = document.getElementById("mainApp");
+  const loadingOverlay = document.getElementById("loadingOverlay");
+  const authMessage = document.getElementById("authMessage");
 
-  function loadState() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch (e) {
-      console.warn("Could not load saved data, starting fresh.", e);
+  function showLoading(show) {
+    if(loadingOverlay) loadingOverlay.style.display = show ? "flex" : "none";
+  }
+
+  // ===================== 1. AUTHENTICATION =====================
+  supabase.auth.onAuthStateChange(async (event, session) => {
+    if (session) {
+      currentUser = session.user;
+      authOverlay.style.display = "none";
+      mainApp.style.display = "grid";
+      const emailDisplay = document.getElementById("userEmailDisplay");
+      if(emailDisplay) emailDisplay.textContent = currentUser.email;
+      
+      await loadDataFromSupabase();
+      initUI();
+    } else {
+      currentUser = null;
+      mainApp.style.display = "none";
+      authOverlay.style.display = "flex";
     }
-    return { subjects: [], exams: [], dailyLog: {}, activeSubjectId: null };
+  });
+
+  document.getElementById("loginBtn").addEventListener("click", async () => {
+    const email = document.getElementById("authEmail").value;
+    const password = document.getElementById("authPassword").value;
+    if(!email || !password) return authMessage.textContent = "Email and Password required!";
+    
+    authMessage.textContent = "Logging in...";
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) authMessage.textContent = error.message;
+  });
+
+  document.getElementById("signupBtn").addEventListener("click", async () => {
+    const email = document.getElementById("authEmail").value;
+    const password = document.getElementById("authPassword").value;
+    if(!email || !password) return authMessage.textContent = "Email and Password required!";
+
+    authMessage.textContent = "Signing up...";
+    const { error } = await supabase.auth.signUp({ email, password });
+    if (error) authMessage.textContent = error.message;
+    else authMessage.textContent = "Check your email to confirm signup!";
+  });
+
+  document.getElementById("logoutBtn").addEventListener("click", async () => {
+    await supabase.auth.signOut();
+  });
+
+  document.getElementById("forgotPasswordBtn").addEventListener("click", async () => {
+    const email = document.getElementById("authEmail").value;
+    if(!email) {
+      authMessage.textContent = "Enter your email first.";
+      return;
+    }
+    const { error } = await supabase.auth.resetPasswordForEmail(email);
+    authMessage.textContent = error ? error.message : "Password reset link sent!";
+  });
+
+  // ===================== 2. DATA FETCHING (SUPABASE) =====================
+  async function loadDataFromSupabase() {
+    showLoading(true);
+    state = { subjects: [], exams: [], dailyLog: {}, activeSubjectId: null };
+
+    const [ 
+      { data: subjects }, { data: chapters }, { data: topics }, 
+      { data: exams }, { data: examTopics }, { data: logs } 
+    ] = await Promise.all([
+      supabase.from('subjects').select('*').order('created_at', { ascending: true }),
+      supabase.from('chapters').select('*').order('order_number', { ascending: true }),
+      supabase.from('topics').select('*').order('order_number', { ascending: true }),
+      supabase.from('exams').select('*').order('exam_date', { ascending: true }),
+      supabase.from('exam_topics').select('*'),
+      supabase.from('daily_logs').select('*')
+    ]);
+
+    if (subjects) {
+      subjects.forEach(sub => {
+        const subject = { ...sub, chapters: [] };
+        const subChaps = chapters ? chapters.filter(c => c.subject_id === sub.id) : [];
+        
+        subChaps.forEach(chap => {
+          const chapter = { ...chap, topics: topics ? topics.filter(t => t.chapter_id === chap.id) : [] };
+          chapter.topics.forEach(t => {
+            t.done = t.is_done;
+            t.doneDate = t.done_date;
+          });
+          subject.chapters.push(chapter);
+        });
+        state.subjects.push(subject);
+      });
+      if (state.subjects.length > 0) state.activeSubjectId = state.subjects[0].id;
+    }
+
+    if (exams) {
+      exams.forEach(ex => {
+        const linkedTopics = examTopics ? examTopics.filter(et => et.exam_id === ex.id).map(et => et.topic_id) : [];
+        state.exams.push({ ...ex, topicIds: linkedTopics, date: ex.exam_date });
+      });
+    }
+
+    if (logs) {
+      logs.forEach(l => {
+        state.dailyLog[l.log_date] = l.topics_completed;
+      });
+    }
+    showLoading(false);
   }
 
-  function saveState() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }
-
-  function uid(prefix) {
-    return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-  }
-
-  function todayISO() {
-    return new Date().toISOString().slice(0, 10);
-  }
+  // ===================== 3. NAVIGATION & HELPERS =====================
+  function todayISO() { return new Date().toISOString().slice(0, 10); }
+  function uid(prefix) { return prefix + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
 
   const navButtons = document.querySelectorAll(".nav-btn");
   const tabPanels = document.querySelectorAll(".tab-panel");
 
   navButtons.forEach((btn) => {
     btn.addEventListener("click", () => {
+      const goToSubjects = () => document.querySelector('.nav-btn[data-tab="subjects"]').click();
+      const heroStartBtn = document.getElementById("heroStartBtn");
+      const finalStartBtn = document.getElementById("finalStartBtn");
+      if (heroStartBtn) heroStartBtn.addEventListener("click", goToSubjects);
+      if (finalStartBtn) finalStartBtn.addEventListener("click", goToSubjects);
+      
       const tab = btn.dataset.tab;
       navButtons.forEach((b) => b.classList.toggle("active", b === btn));
       tabPanels.forEach((p) => p.classList.toggle("active", p.id === "tab-" + tab));
@@ -45,10 +142,8 @@
     });
   });
 
-  function allTopicsOfSubject(subject) {
-    return subject.chapters.flatMap((c) => c.topics);
-  }
-
+  function allTopicsOfSubject(subject) { return subject.chapters.flatMap((c) => c.topics); }
+  
   function subjectStats(subject) {
     const topics = allTopicsOfSubject(subject);
     const total = topics.length;
@@ -56,14 +151,12 @@
     const pct = total === 0 ? 0 : Math.round((done / total) * 100);
     return { total, done, pct };
   }
-
+  
   function overallStats() {
-    let total = 0;
-    let done = 0;
+    let total = 0, done = 0;
     state.subjects.forEach((s) => {
       const st = subjectStats(s);
-      total += st.total;
-      done += st.done;
+      total += st.total; done += st.done;
     });
     const pct = total === 0 ? 0 : Math.round((done / total) * 100);
     return { total, done, pct };
@@ -85,6 +178,13 @@
     return "status-high";
   }
 
+  function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // ===================== 4. DASHBOARD RENDER =====================
   const RING_RADIUS = 52;
   const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 
@@ -92,28 +192,29 @@
     const stats = overallStats();
 
     const ring = document.getElementById("overallRing");
-    ring.style.strokeDasharray = RING_CIRCUMFERENCE.toFixed(1);
-    const offset = RING_CIRCUMFERENCE - (stats.pct / 100) * RING_CIRCUMFERENCE;
-    ring.style.strokeDashoffset = offset.toFixed(1);
+    if(ring) {
+      ring.style.strokeDasharray = RING_CIRCUMFERENCE.toFixed(1);
+      const offset = RING_CIRCUMFERENCE - (stats.pct / 100) * RING_CIRCUMFERENCE;
+      ring.style.strokeDashoffset = offset.toFixed(1);
+    }
 
-    document.getElementById("overallPercent").textContent = stats.pct + "%";
-    document.getElementById("overallFraction").textContent = `${stats.done} / ${stats.total} topics`;
+    const overallPctEl = document.getElementById("overallPercent");
+    if(overallPctEl) overallPctEl.textContent = stats.pct + "%";
+    const overallFracEl = document.getElementById("overallFraction");
+    if(overallFracEl) overallFracEl.textContent = `${stats.done} / ${stats.total} topics`;
 
     const withTopics = state.subjects.filter((s) => allTopicsOfSubject(s).length > 0);
     const weakLine = document.getElementById("weakSubjectLine");
     if (withTopics.length === 0) {
-      weakLine.textContent = "Sabse peeche: — abhi data nahi hai.";
+      if(weakLine) weakLine.textContent = "Sabse peeche: — abhi data nahi hai.";
     } else {
       let weakest = withTopics[0];
       let weakestPct = subjectStats(weakest).pct;
       withTopics.forEach((s) => {
         const p = subjectStats(s).pct;
-        if (p < weakestPct) {
-          weakest = s;
-          weakestPct = p;
-        }
+        if (p < weakestPct) { weakest = s; weakestPct = p; }
       });
-      weakLine.textContent = `Sabse peeche: ${weakest.name} — ${weakestPct}% complete.`;
+      if(weakLine) weakLine.textContent = `Sabse peeche: ${weakest.name} — ${weakestPct}% complete.`;
     }
 
     const nextLine = document.getElementById("nextExamLine");
@@ -124,28 +225,30 @@
       .sort((a, b) => a.daysLeft - b.daysLeft);
 
     if (upcoming.length === 0) {
-      nextLine.textContent = "Agla exam: — set nahi kiya gaya.";
+      if(nextLine) nextLine.textContent = "Agla exam: — set nahi kiya gaya.";
     } else {
       const e = upcoming[0];
-      nextLine.textContent = `Agla exam: ${e.name} — ${e.daysLeft} din baaki.`;
+      if(nextLine) nextLine.textContent = `Agla exam: ${e.name} — ${e.daysLeft} din baaki.`;
     }
 
     const grid = document.getElementById("subjectCardGrid");
-    grid.innerHTML = "";
-    if (state.subjects.length === 0) {
-      grid.innerHTML = `<p class="empty-hint">Subjects tab mein jaake syllabus daalo, cards yahan dikhengi.</p>`;
-    } else {
-      state.subjects.forEach((s) => {
-        const st = subjectStats(s);
-        const card = document.createElement("div");
-        card.className = `subject-card ${statusClassFor(st.pct)}`;
-        card.innerHTML = `
-          <h3>${escapeHtml(s.name)}</h3>
-          <div class="bar-track"><div class="bar-fill" style="width:${st.pct}%"></div></div>
-          <div class="card-stat">${st.done} / ${st.total} &middot; ${st.pct}%</div>
-        `;
-        grid.appendChild(card);
-      });
+    if(grid) {
+      grid.innerHTML = "";
+      if (state.subjects.length === 0) {
+        grid.innerHTML = `<p class="empty-hint">Subjects tab mein jaake syllabus daalo, cards yahan dikhengi.</p>`;
+      } else {
+        state.subjects.forEach((s) => {
+          const st = subjectStats(s);
+          const card = document.createElement("div");
+          card.className = `subject-card ${statusClassFor(st.pct)}`;
+          card.innerHTML = `
+            <h3>${escapeHtml(s.name)}</h3>
+            <div class="bar-track"><div class="bar-fill" style="width:${st.pct}%"></div></div>
+            <div class="card-stat">${st.done} / ${st.total} &middot; ${st.pct}%</div>
+          `;
+          grid.appendChild(card);
+        });
+      }
     }
 
     renderStreakStats();
@@ -154,33 +257,24 @@
   }
 
   function daysUntil(dateStr) {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
     const target = new Date(dateStr + "T00:00:00");
-    const diffMs = target - today;
-    return Math.round(diffMs / (1000 * 60 * 60 * 24));
+    return Math.round((target - today) / (1000 * 60 * 60 * 24));
   }
 
-  function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = str;
-    return div.innerHTML;
-  }
-
+  // ===================== 5. SUBJECTS RENDER & CRUD =====================
   const subjectListEl = document.getElementById("subjectList");
   const subjectDetailEmpty = document.getElementById("subjectDetailEmpty");
   const subjectDetailContent = document.getElementById("subjectDetailContent");
-  const activeSubjectName = document.getElementById("activeSubjectName");
-  const activeSubjectBar = document.getElementById("activeSubjectBar");
-  const activeSubjectStat = document.getElementById("activeSubjectStat");
   const chapterListEl = document.getElementById("chapterList");
 
   function renderSubjectsTab() {
+    if(!subjectListEl) return;
     subjectListEl.innerHTML = "";
 
     if (state.subjects.length === 0) {
-      subjectDetailEmpty.hidden = false;
-      subjectDetailContent.hidden = true;
+      if(subjectDetailEmpty) subjectDetailEmpty.hidden = false;
+      if(subjectDetailContent) subjectDetailContent.hidden = true;
       return;
     }
 
@@ -197,32 +291,27 @@
       `;
       li.addEventListener("click", () => {
         state.activeSubjectId = s.id;
-        saveState();
         renderSubjectsTab();
       });
       li.querySelector(".li-delete-btn").addEventListener("click", (e) => {
         e.stopPropagation();
-        if (confirm(`"${s.name}" subject delete karna hai? Iske sare chapters/topics bhi hat jayenge.`)) {
-          deleteSubject(s.id);
-        }
+        deleteSubject(s.id, s.name);
       });
       subjectListEl.appendChild(li);
     });
 
     if (!state.activeSubjectId || !state.subjects.find((s) => s.id === state.activeSubjectId)) {
       state.activeSubjectId = state.subjects[0].id;
-      saveState();
     }
 
     const activeSubject = state.subjects.find((s) => s.id === state.activeSubjectId);
-
-    subjectDetailEmpty.hidden = true;
-    subjectDetailContent.hidden = false;
+    if(subjectDetailEmpty) subjectDetailEmpty.hidden = true;
+    if(subjectDetailContent) subjectDetailContent.hidden = false;
 
     const st = subjectStats(activeSubject);
-    activeSubjectName.textContent = activeSubject.name;
-    activeSubjectBar.style.width = st.pct + "%";
-    activeSubjectStat.textContent = `${st.done} / ${st.total} \u00B7 ${st.pct}%`;
+    document.getElementById("activeSubjectName").textContent = activeSubject.name;
+    document.getElementById("activeSubjectBar").style.width = st.pct + "%";
+    document.getElementById("activeSubjectStat").textContent = `${st.done} / ${st.total} \u00B7 ${st.pct}%`;
 
     chapterListEl.innerHTML = "";
     if (activeSubject.chapters.length === 0) {
@@ -246,10 +335,9 @@
           </span>
         `;
         block.appendChild(head);
+        
         head.querySelector(".chapter-delete-btn").addEventListener("click", () => {
-          if (confirm(`"${chapter.name}" chapter delete karna hai? Iske sare topics bhi hat jayenge.`)) {
-            deleteChapter(activeSubject.id, chapter.id);
-          }
+          deleteChapter(activeSubject.id, chapter.id, chapter.name);
         });
 
         chapter.topics.forEach((topic) => {
@@ -266,200 +354,186 @@
             toggleTopic(topic.id, checkbox.checked);
           });
           row.querySelector(".topic-delete-btn").addEventListener("click", () => {
-            if (confirm(`"${topic.name}" topic delete karna hai?`)) {
-              deleteTopic(topic.id);
-            }
+            deleteTopic(topic.id, topic.name);
           });
           block.appendChild(row);
         });
-
         chapterListEl.appendChild(block);
       });
     }
   }
 
-  function toggleTopic(topicId, isDone) {
-    const topic = findTopicById(topicId);
-    if (!topic) return;
+  // --- CRUD FUNCTIONS (Now with Supabase) ---
 
-    if (isDone && !topic.done) {
-      topic.done = true;
-      topic.doneDate = todayISO();
-      state.dailyLog[topic.doneDate] = (state.dailyLog[topic.doneDate] || 0) + 1;
-    } else if (!isDone && topic.done) {
-      if (topic.doneDate && state.dailyLog[topic.doneDate]) {
-        state.dailyLog[topic.doneDate] = Math.max(0, state.dailyLog[topic.doneDate] - 1);
-      }
-      topic.done = false;
-      topic.doneDate = null;
-    }
-
-    saveState();
-    renderSubjectsTab();
-    renderDashboard();
-    renderExamsTab();
-    updateChart();
+  const addSubjectBtn = document.getElementById("addSubjectBtn");
+  if(addSubjectBtn) {
+    addSubjectBtn.addEventListener("click", async () => {
+      const name = prompt("Subject ka naam likho — e.g. Maths 2");
+      if (!name || !name.trim()) return;
+      showLoading(true);
+      const { data, error } = await supabase.from('subjects').insert([{ name: name.trim(), user_id: currentUser.id }]).select();
+      showLoading(false);
+      if (error) return alert("Error saving subject: " + error.message);
+      
+      state.subjects.push({ ...data[0], chapters: [] });
+      state.activeSubjectId = data[0].id;
+      reRenderAll();
+    });
   }
 
-  document.getElementById("addSubjectBtn").addEventListener("click", () => {
-    const name = prompt("Subject ka naam likho — e.g. Maths 2");
-    if (!name || !name.trim()) return;
-    const subject = { id: uid("sub"), name: name.trim(), chapters: [] };
-    state.subjects.push(subject);
-    state.activeSubjectId = subject.id;
-    saveState();
-    renderSubjectsTab();
-    renderDashboard();
-    renderExamsTab();
-  });
+  const addChapterBtn = document.getElementById("addChapterBtn");
+  if(addChapterBtn) {
+    addChapterBtn.addEventListener("click", async () => {
+      const activeSubject = state.subjects.find((s) => s.id === state.activeSubjectId);
+      if (!activeSubject) return;
 
-  document.getElementById("addChapterBtn").addEventListener("click", () => {
-    const activeSubject = state.subjects.find((s) => s.id === state.activeSubjectId);
-    if (!activeSubject) return;
+      const chapterNameInput = document.getElementById("chapterNameInput");
+      const bulkTopicsInput = document.getElementById("bulkTopicsInput");
 
-    const chapterNameInput = document.getElementById("chapterNameInput");
-    const bulkTopicsInput = document.getElementById("bulkTopicsInput");
+      const chapterName = chapterNameInput.value.trim();
+      const topicsRaw = bulkTopicsInput.value.trim();
 
-    const chapterName = chapterNameInput.value.trim();
-    const topicsRaw = bulkTopicsInput.value.trim();
+      if (!chapterName) return alert("Chapter ka naam daalo pehle.");
+      if (!topicsRaw) return alert("Kam se kam ek topic to daalo, comma se separate karke.");
 
-    if (!chapterName) {
-      alert("Chapter ka naam daalo pehle.");
-      return;
-    }
-    if (!topicsRaw) {
-      alert("Kam se kam ek topic to daalo, comma se separate karke.");
-      return;
-    }
+      const topicNames = topicsRaw.split(",").map((t) => t.trim()).filter((t) => t.length > 0);
+      if (topicNames.length === 0) return alert("Valid topics nahi mile.");
 
-    const topicNames = topicsRaw
-      .split(",")
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
+      showLoading(true);
+      const order_num = activeSubject.chapters.length + 1;
+      
+      const { data: chapData, error: chapErr } = await supabase.from('chapters')
+        .insert([{ name: chapterName, subject_id: activeSubject.id, user_id: currentUser.id, order_number: order_num }]).select();
+      
+      if (chapErr || !chapData) {
+        showLoading(false);
+        return alert("Error adding chapter: " + chapErr.message);
+      }
 
-    if (topicNames.length === 0) {
-      alert("Valid topics nahi mile. Comma se separate karke likho.");
-      return;
-    }
+      const newChapter = { ...chapData[0], topics: [] };
+      const topicInserts = topicNames.map((n, i) => ({
+        name: n, chapter_id: newChapter.id, user_id: currentUser.id, order_number: i + 1
+      }));
 
-    const chapter = {
-      id: uid("chap"),
-      name: chapterName,
-      topics: topicNames.map((name) => ({
-        id: uid("top"),
-        name,
-        done: false,
-        doneDate: null,
-      })),
-    };
+      const { data: topsData, error: topErr } = await supabase.from('topics').insert(topicInserts).select();
+      
+      showLoading(false);
+      if (topErr) return alert("Error adding topics: " + topErr.message);
 
-    activeSubject.chapters.push(chapter);
-    saveState();
+      newChapter.topics = topsData.map(t => ({ ...t, done: t.is_done, doneDate: t.done_date }));
+      activeSubject.chapters.push(newChapter);
 
-    chapterNameInput.value = "";
-    bulkTopicsInput.value = "";
-
-    renderSubjectsTab();
-    renderDashboard();
-    renderExamsTab();
-  });
-
-  function deleteSubject(subjectId) {
-    const subject = state.subjects.find((s) => s.id === subjectId);
-    if (!subject) return;
-
-    const topicIdsToRemove = allTopicsOfSubject(subject).map((t) => t.id);
-
-    state.subjects = state.subjects.filter((s) => s.id !== subjectId);
-
-    state.exams.forEach((exam) => {
-      exam.topicIds = exam.topicIds.filter((id) => !topicIdsToRemove.includes(id));
+      chapterNameInput.value = "";
+      bulkTopicsInput.value = "";
+      reRenderAll();
     });
+  }
 
+  async function deleteSubject(subjectId, name) {
+    if (!confirm(`"${name}" subject delete karna hai? Iske sare chapters/topics bhi hat jayenge.`)) return;
+    showLoading(true);
+    await supabase.from('subjects').delete().eq('id', subjectId);
+    state.subjects = state.subjects.filter((s) => s.id !== subjectId);
     if (state.activeSubjectId === subjectId) {
       state.activeSubjectId = state.subjects.length > 0 ? state.subjects[0].id : null;
     }
-
-    saveState();
-    renderSubjectsTab();
-    renderDashboard();
-    renderExamsTab();
+    showLoading(false);
+    reRenderAll();
   }
 
-  function deleteChapter(subjectId, chapterId) {
+  async function deleteChapter(subjectId, chapterId, name) {
+    if (!confirm(`"${name}" chapter delete karna hai? Iske sare topics bhi hat jayenge.`)) return;
+    showLoading(true);
+    await supabase.from('chapters').delete().eq('id', chapterId);
     const subject = state.subjects.find((s) => s.id === subjectId);
-    if (!subject) return;
-    const chapter = subject.chapters.find((c) => c.id === chapterId);
-    if (!chapter) return;
-
-    const topicIdsToRemove = chapter.topics.map((t) => t.id);
-    subject.chapters = subject.chapters.filter((c) => c.id !== chapterId);
-
-    state.exams.forEach((exam) => {
-      exam.topicIds = exam.topicIds.filter((id) => !topicIdsToRemove.includes(id));
-    });
-
-    saveState();
-    renderSubjectsTab();
-    renderDashboard();
-    renderExamsTab();
+    if (subject) {
+      subject.chapters = subject.chapters.filter((c) => c.id !== chapterId);
+    }
+    showLoading(false);
+    reRenderAll();
   }
 
-  function deleteTopic(topicId) {
+  async function deleteTopic(topicId, name) {
+    if (!confirm(`"${name}" topic delete karna hai?`)) return;
+    showLoading(true);
+    await supabase.from('topics').delete().eq('id', topicId);
     for (const s of state.subjects) {
       for (const c of s.chapters) {
         const idx = c.topics.findIndex((t) => t.id === topicId);
         if (idx !== -1) {
-          const topic = c.topics[idx];
-          if (topic.done && topic.doneDate && state.dailyLog[topic.doneDate]) {
-            state.dailyLog[topic.doneDate] = Math.max(0, state.dailyLog[topic.doneDate] - 1);
-          }
           c.topics.splice(idx, 1);
-
-          state.exams.forEach((exam) => {
-            exam.topicIds = exam.topicIds.filter((id) => id !== topicId);
-          });
-
-          saveState();
-          renderSubjectsTab();
-          renderDashboard();
-          renderExamsTab();
-          updateChart();
-          return;
+          break;
         }
       }
     }
+    showLoading(false);
+    reRenderAll();
   }
 
+  async function toggleTopic(topicId, isDone) {
+    const topic = findTopicById(topicId);
+    if (!topic) return;
+
+    showLoading(true);
+    const doneDate = isDone ? todayISO() : null;
+
+    // Update Topic in Supabase
+    await supabase.from('topics').update({ is_done: isDone, done_date: doneDate }).eq('id', topicId);
+    topic.done = isDone;
+    topic.doneDate = doneDate;
+
+    // Update Daily Log Streak in Supabase
+    if (isDone) {
+      const currentVal = state.dailyLog[doneDate] || 0;
+      state.dailyLog[doneDate] = currentVal + 1;
+      
+      const { data } = await supabase.from('daily_logs').select('topics_completed').eq('log_date', doneDate);
+      if (data && data.length > 0) {
+        await supabase.from('daily_logs').update({ topics_completed: state.dailyLog[doneDate] }).eq('log_date', doneDate);
+      } else {
+        await supabase.from('daily_logs').insert([{ log_date: doneDate, topics_completed: 1, user_id: currentUser.id }]);
+      }
+    } else if (!isDone && topic.doneDate) {
+      const oldDate = topic.doneDate;
+      if (state.dailyLog[oldDate]) {
+        state.dailyLog[oldDate] = Math.max(0, state.dailyLog[oldDate] - 1);
+        await supabase.from('daily_logs').update({ topics_completed: state.dailyLog[oldDate] }).eq('log_date', oldDate);
+      }
+    }
+
+    showLoading(false);
+    reRenderAll();
+  }
+
+  // ===================== 6. EXAMS RENDER & CRUD =====================
   const examListEl = document.getElementById("examList");
 
-  document.getElementById("addExamBtn").addEventListener("click", () => {
-    const nameInput = document.getElementById("examNameInput");
-    const dateInput = document.getElementById("examDateInput");
+  const addExamBtn = document.getElementById("addExamBtn");
+  if(addExamBtn) {
+    addExamBtn.addEventListener("click", async () => {
+      const nameInput = document.getElementById("examNameInput");
+      const dateInput = document.getElementById("examDateInput");
+      const name = nameInput.value.trim();
+      const date = dateInput.value;
 
-    const name = nameInput.value.trim();
-    const date = dateInput.value;
+      if (!name) return alert("Exam ka naam daalo — e.g. Mid Sem 1");
+      if (!date) return alert("Exam ki date select karo.");
 
-    if (!name) {
-      alert("Exam ka naam daalo — e.g. Mid Sem 1");
-      return;
-    }
-    if (!date) {
-      alert("Exam ki date select karo.");
-      return;
-    }
+      showLoading(true);
+      const { data, error } = await supabase.from('exams').insert([{ name, exam_date: date, user_id: currentUser.id }]).select();
+      showLoading(false);
 
-    state.exams.push({ id: uid("exam"), name, date, topicIds: [] });
-    saveState();
-
-    nameInput.value = "";
-    dateInput.value = "";
-
-    renderExamsTab();
-    renderDashboard();
-  });
+      if (error) return alert("Error adding exam: " + error.message);
+      
+      state.exams.push({ ...data[0], date: data[0].exam_date, topicIds: [] });
+      nameInput.value = "";
+      dateInput.value = "";
+      reRenderAll();
+    });
+  }
 
   function renderExamsTab() {
+    if(!examListEl) return;
     examListEl.innerHTML = "";
 
     if (state.exams.length === 0) {
@@ -491,16 +565,11 @@
       }
 
       let readinessText;
-      if (total === 0) {
-        readinessText = "Abhi syllabus select nahi kiya — neeche se topics choose karo.";
-      } else if (daysLeft < 0) {
-        readinessText = `Syllabus ka ${pct}% cover hua tha.`;
-      } else {
+      if (total === 0) readinessText = "Abhi syllabus select nahi kiya — neeche se topics choose karo.";
+      else if (daysLeft < 0) readinessText = `Syllabus ka ${pct}% cover hua tha.`;
+      else {
         const remaining = total - done;
-        readinessText =
-          remaining === 0
-            ? "Poora syllabus complete — well done!"
-            : `${remaining} topics baaki hain, ${daysLeft > 0 ? daysLeft : 0} din mein.`;
+        readinessText = remaining === 0 ? "Poora syllabus complete — well done!" : `${remaining} topics baaki hain, ${daysLeft > 0 ? daysLeft : 0} din mein.`;
       }
 
       const card = document.createElement("div");
@@ -515,9 +584,7 @@
         <div class="exam-syllabus-picker" id="picker-${exam.id}"></div>
       `;
       examListEl.appendChild(card);
-
-      const picker = card.querySelector(`#picker-${exam.id}`);
-      renderSyllabusPicker(picker, exam);
+      renderSyllabusPicker(card.querySelector(`#picker-${exam.id}`), exam);
     });
   }
 
@@ -526,7 +593,6 @@
       container.innerHTML = `<p class="empty-hint">Pehle Subjects tab mein topics add karo, phir yahan syllabus select karo.</p>`;
       return;
     }
-
     container.innerHTML = "";
     state.subjects.forEach((s) => {
       s.chapters.forEach((c) => {
@@ -535,20 +601,24 @@
           row.className = "topic-row";
           const checkboxId = `exam-${exam.id}-topic-${topic.id}`;
           const checked = exam.topicIds.includes(topic.id);
+          
           row.innerHTML = `
             <input type="checkbox" id="${checkboxId}" ${checked ? "checked" : ""}>
             <label for="${checkboxId}">${escapeHtml(s.name)} &rsaquo; ${escapeHtml(c.name)} &rsaquo; ${escapeHtml(topic.name)}</label>
           `;
+          
           const checkbox = row.querySelector("input");
-          checkbox.addEventListener("change", () => {
+          checkbox.addEventListener("change", async () => {
+            showLoading(true);
             if (checkbox.checked) {
+              await supabase.from('exam_topics').insert([{ exam_id: exam.id, topic_id: topic.id }]);
               if (!exam.topicIds.includes(topic.id)) exam.topicIds.push(topic.id);
             } else {
+              await supabase.from('exam_topics').delete().match({ exam_id: exam.id, topic_id: topic.id });
               exam.topicIds = exam.topicIds.filter((id) => id !== topic.id);
             }
-            saveState();
-            renderExamsTab();
-            renderDashboard();
+            showLoading(false);
+            renderExamsTab(); renderDashboard();
           });
           container.appendChild(row);
         });
@@ -556,6 +626,7 @@
     });
   }
 
+  // ===================== 7. ANALYTICS & CHARTS =====================
   let chartInstance = null;
   let currentRange = "daily";
 
@@ -568,13 +639,10 @@
   });
 
   function getDailySeries(days) {
-    const labels = [];
-    const values = [];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const labels = [], values = [];
+    const today = new Date(); today.setHours(0, 0, 0, 0);
     for (let i = days - 1; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
+      const d = new Date(today); d.setDate(d.getDate() - i);
       const iso = d.toISOString().slice(0, 10);
       labels.push(d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" }));
       values.push(state.dailyLog[iso] || 0);
@@ -583,19 +651,14 @@
   }
 
   function getWeeklySeries(weeks) {
-    const labels = [];
-    const values = [];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const labels = [], values = [];
+    const today = new Date(); today.setHours(0, 0, 0, 0);
     for (let w = weeks - 1; w >= 0; w--) {
       let sum = 0;
-      const weekEnd = new Date(today);
-      weekEnd.setDate(weekEnd.getDate() - w * 7);
-      const weekStart = new Date(weekEnd);
-      weekStart.setDate(weekStart.getDate() - 6);
+      const weekEnd = new Date(today); weekEnd.setDate(weekEnd.getDate() - w * 7);
+      const weekStart = new Date(weekEnd); weekStart.setDate(weekStart.getDate() - 6);
       for (let d = new Date(weekStart); d <= weekEnd; d.setDate(d.getDate() + 1)) {
-        const iso = d.toISOString().slice(0, 10);
-        sum += state.dailyLog[iso] || 0;
+        sum += state.dailyLog[d.toISOString().slice(0, 10)] || 0;
       }
       labels.push(`${weekStart.getDate()}/${weekStart.getMonth() + 1}`);
       values.push(sum);
@@ -604,17 +667,14 @@
   }
 
   function getMonthlySeries(months) {
-    const labels = [];
-    const values = [];
+    const labels = [], values = [];
     const now = new Date();
     for (let m = months - 1; m >= 0; m--) {
       const target = new Date(now.getFullYear(), now.getMonth() - m, 1);
-      const year = target.getFullYear();
-      const month = target.getMonth();
       let sum = 0;
       Object.keys(state.dailyLog).forEach((iso) => {
         const d = new Date(iso + "T00:00:00");
-        if (d.getFullYear() === year && d.getMonth() === month) {
+        if (d.getFullYear() === target.getFullYear() && d.getMonth() === target.getMonth()) {
           sum += state.dailyLog[iso];
         }
       });
@@ -644,59 +704,37 @@
       type: "line",
       data: {
         labels: series.labels,
-        datasets: [
-          {
-            label: "Topics completed",
-            data: series.values,
-            borderColor: "#E3A008",
-            backgroundColor: "rgba(227, 160, 8, 0.15)",
-            tension: 0.3,
-            fill: true,
-            pointRadius: 3,
-          },
-        ],
+        datasets: [{ label: "Topics completed", data: series.values, borderColor: "#E3A008", backgroundColor: "rgba(227, 160, 8, 0.15)", tension: 0.3, fill: true, pointRadius: 3 }]
       },
-      options: {
-        responsive: true,
-        plugins: { legend: { display: false } },
-        scales: {
-          y: { beginAtZero: true, ticks: { precision: 0 } },
-        },
-      },
+      options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
     });
   }
 
   function renderStreakStats() {
     let streak = 0;
-    let cursor = new Date();
-    cursor.setHours(0, 0, 0, 0);
+    let cursor = new Date(); cursor.setHours(0, 0, 0, 0);
 
-    if (!state.dailyLog[cursor.toISOString().slice(0, 10)]) {
-      cursor.setDate(cursor.getDate() - 1);
-    }
+    if (!state.dailyLog[cursor.toISOString().slice(0, 10)]) cursor.setDate(cursor.getDate() - 1);
 
     while (true) {
       const iso = cursor.toISOString().slice(0, 10);
       if (state.dailyLog[iso] && state.dailyLog[iso] > 0) {
         streak++;
         cursor.setDate(cursor.getDate() - 1);
-      } else {
-        break;
-      }
+      } else break;
     }
 
     let activeDays = 0;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const today = new Date(); today.setHours(0, 0, 0, 0);
     for (let i = 0; i < 30; i++) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      const iso = d.toISOString().slice(0, 10);
-      if (state.dailyLog[iso] && state.dailyLog[iso] > 0) activeDays++;
+      const d = new Date(today); d.setDate(d.getDate() - i);
+      if (state.dailyLog[d.toISOString().slice(0, 10)] > 0) activeDays++;
     }
 
-    document.getElementById("streakCount").textContent = streak;
-    document.getElementById("activeDaysCount").textContent = activeDays;
+    const streakEl = document.getElementById("streakCount");
+    if(streakEl) streakEl.textContent = streak;
+    const activeEl = document.getElementById("activeDaysCount");
+    if(activeEl) activeEl.textContent = activeDays;
   }
 
   function renderHeatmap() {
@@ -704,18 +742,12 @@
     if (!container) return;
     container.innerHTML = "";
 
-    const totalDays = 84;
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
+    const totalDays = 84, today = new Date(); today.setHours(0, 0, 0, 0);
     const values = [];
     for (let i = totalDays - 1; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      const iso = d.toISOString().slice(0, 10);
-      values.push(state.dailyLog[iso] || 0);
+      const d = new Date(today); d.setDate(d.getDate() - i);
+      values.push(state.dailyLog[d.toISOString().slice(0, 10)] || 0);
     }
-
     const max = Math.max(1, ...values);
 
     function levelFor(count) {
@@ -731,8 +763,7 @@
       const weekCol = document.createElement("div");
       weekCol.className = "heatmap-week";
       for (let d = 0; d < 7; d++) {
-        const idx = w * 7 + d;
-        const count = values[idx] || 0;
+        const count = values[w * 7 + d] || 0;
         const cell = document.createElement("div");
         cell.className = "heatmap-cell";
         cell.dataset.level = levelFor(count);
@@ -744,7 +775,6 @@
   }
 
   let compareChartInstance = null;
-
   function renderSubjectCompareChart() {
     const canvas = document.getElementById("subjectCompareChart");
     if (!canvas || typeof Chart === "undefined") return;
@@ -758,36 +788,17 @@
       compareChartInstance.update();
       return;
     }
-
     compareChartInstance = new Chart(canvas.getContext("2d"), {
       type: "bar",
-      data: {
-        labels,
-        datasets: [
-          {
-            label: "% complete",
-            data: values,
-            backgroundColor: "#2F6F63",
-            borderRadius: 4,
-          },
-        ],
-      },
-      options: {
-        responsive: true,
-        plugins: { legend: { display: false } },
-        scales: {
-          y: { beginAtZero: true, max: 100, ticks: { callback: (v) => v + "%" } },
-        },
-      },
+      data: { labels, datasets: [{ label: "% complete", data: values, backgroundColor: "#2F6F63", borderRadius: 4 }] },
+      options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, max: 100, ticks: { callback: (v) => v + "%" } } } }
     });
   }
 
-  function init() {
-    renderDashboard();
-    renderSubjectsTab();
-    renderExamsTab();
-    updateChart();
+  function reRenderAll() {
+    renderSubjectsTab(); renderExamsTab(); renderDashboard(); updateChart();
   }
 
-  init();
+  function initUI() { reRenderAll(); }
+
 })();

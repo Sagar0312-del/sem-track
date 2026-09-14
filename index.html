@@ -5,15 +5,40 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Progress Tracker — Sem Tracker</title>
 
-<!-- Fonts: Fraunces for headings (engineering-notebook character), Inter for data/UI -->
+<!-- Fonts: Fraunces for headings, Inter for data/UI -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
 <link rel="stylesheet" href="style.css">
+
+<!-- Supabase CDN -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 
-<div class="app">
+<!-- ===================== AUTHENTICATION OVERLAY ===================== -->
+<div id="authOverlay" class="auth-overlay">
+  <div class="auth-card">
+    <div class="brand auth-brand">
+      <span class="brand-mark">§</span>
+      <span class="brand-text" style="color: var(--ink);">Sem Tracker</span>
+    </div>
+    <h2>Welcome Back</h2>
+    <p>Sign in to sync your syllabus across all devices.</p>
+    
+    <input type="email" id="authEmail" placeholder="Email Address" required>
+    <input type="password" id="authPassword" placeholder="Password" required>
+    
+    <div class="auth-buttons">
+      <button id="loginBtn" class="primary-btn">Log In</button>
+      <button id="signupBtn" class="secondary-btn">Sign Up</button>
+    </div>
+    <button id="forgotPasswordBtn" class="text-btn">Forgot Password?</button>
+    <p id="authMessage" class="auth-message"></p>
+  </div>
+</div>
+
+<div class="app" id="mainApp" style="display: none;">
 
   <!-- ===================== SIDEBAR NAV ===================== -->
   <aside class="sidebar">
@@ -23,7 +48,10 @@
     </div>
 
     <nav class="nav">
-      <button class="nav-btn active" data-tab="dashboard">
+      <button class="nav-btn active" data-tab="home">
+        <span class="nav-index">00</span> Home
+      </button>
+      <button class="nav-btn" data-tab="dashboard">
         <span class="nav-index">01</span> Dashboard
       </button>
       <button class="nav-btn" data-tab="subjects">
@@ -35,16 +63,41 @@
     </nav>
 
     <div class="sidebar-foot">
-      <p>Sem 2 &middot; CSE (Data Science)</p>
+      <p>Logged in as <span id="userEmailDisplay">User</span></p>
+      <button id="logoutBtn" class="text-btn" style="color: var(--coral); padding: 0; margin-top: 8px;">Log Out</button>
     </div>
   </aside>
 
   <!-- ===================== MAIN AREA ===================== -->
   <main class="main">
+    
+    <!-- Loading overlay for database actions -->
+    <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+      <div class="spinner"></div>
+      <p>Syncing with cloud...</p>
+    </div>
+
+    <!-- ---------- TAB: HOME ---------- -->
+    <section class="tab-panel active" id="tab-home">
+      <div class="home-hero">
+        <h1 class="home-title">Sem Tracker</h1>
+        <p class="home-subtitle">Track your syllabus. Track your progress. Stay ahead.</p>
+        <p class="home-desc">Add your subjects and syllabus, track topics as you complete them, and monitor your semester progress in one place.</p>
+        <button class="primary-btn home-cta" id="heroStartBtn">Start Tracking &rarr;</button>
+      </div>
+      <!-- Keep the rest of the Home Tab content the same -->
+      <div class="home-section">
+        <h2 class="home-section-title">How It Works</h2>
+        <div class="steps-grid">
+          <div class="step-card"><span class="step-num">01</span><h3>Add Your Syllabus</h3><p>Add your subjects, chapters and topics.</p></div>
+          <div class="step-card"><span class="step-num">02</span><h3>Track Your Progress</h3><p>Mark topics as completed as you study.</p></div>
+          <div class="step-card"><span class="step-num">03</span><h3>Monitor Your Semester</h3><p>See your overall progress, subject-wise progress and upcoming exams.</p></div>
+        </div>
+      </div>
+    </section>
 
     <!-- ---------- TAB: DASHBOARD ---------- -->
-    <section class="tab-panel active" id="tab-dashboard">
-
+    <section class="tab-panel" id="tab-dashboard">
       <header class="panel-head">
         <h1>Overall Progress</h1>
         <p class="sub">Har subject ka syllabus ek jagah, roz ka kaam trace karte hue.</p>
@@ -61,7 +114,6 @@
             <span class="ring-caption" id="overallFraction">0 / 0 topics</span>
           </div>
         </div>
-
         <div class="hero-notes">
           <p class="hero-line" id="weakSubjectLine">Sabse peeche: — abhi data nahi hai.</p>
           <p class="hero-line" id="nextExamLine">Agla exam: — set nahi kiya gaya.</p>
@@ -69,7 +121,6 @@
       </div>
 
       <div class="subject-cards" id="subjectCardGrid">
-        <!-- JS will inject one card per subject here -->
         <p class="empty-hint">Subjects tab mein jaake syllabus daalo, cards yahan dikhengi.</p>
       </div>
 
@@ -87,96 +138,65 @@
 
       <div class="analysis-block">
         <h2>Study Analysis</h2>
-
         <div class="analysis-row">
-          <div class="analysis-stat">
-            <span class="stat-num" id="streakCount">0</span>
-            <span class="stat-label">din streak</span>
-          </div>
-          <div class="analysis-stat">
-            <span class="stat-num" id="activeDaysCount">0</span>
-            <span class="stat-label">active days (last 30)</span>
-          </div>
+          <div class="analysis-stat"><span class="stat-num" id="streakCount">0</span><span class="stat-label">din streak</span></div>
+          <div class="analysis-stat"><span class="stat-num" id="activeDaysCount">0</span><span class="stat-label">active days (last 30)</span></div>
         </div>
-
         <h3>Last 12 Weeks Heatmap</h3>
         <div class="heatmap" id="heatmap"></div>
-
         <h3>Subject Comparison</h3>
         <canvas id="subjectCompareChart" height="90"></canvas>
       </div>
-
     </section>
 
     <!-- ---------- TAB: SUBJECTS ---------- -->
     <section class="tab-panel" id="tab-subjects">
-
       <header class="panel-head">
         <h1>Subjects &amp; Syllabus</h1>
         <p class="sub">Chapter banao, topics ek saath comma se daalo, roz tick karte jao.</p>
       </header>
-
       <div class="subject-layout">
-
-        <!-- Left: subject list -->
         <div class="subject-rail">
           <div class="rail-head">
             <span>Subjects</span>
             <button class="icon-btn" id="addSubjectBtn" title="Add subject">+</button>
           </div>
-          <ul class="subject-list" id="subjectList">
-            <!-- JS injects subject items -->
-          </ul>
+          <ul class="subject-list" id="subjectList"></ul>
         </div>
-
-        <!-- Right: active subject detail -->
         <div class="subject-detail" id="subjectDetail">
-
           <div class="detail-empty" id="subjectDetailEmpty">
             <p>Koi subject select karo ya naya subject add karo shuru karne ke liye.</p>
           </div>
-
           <div class="detail-content" id="subjectDetailContent" hidden>
             <div class="detail-top">
               <h2 id="activeSubjectName">Subject Name</h2>
               <div class="detail-progress">
-                <div class="bar-track">
-                  <div class="bar-fill" id="activeSubjectBar"></div>
-                </div>
+                <div class="bar-track"><div class="bar-fill" id="activeSubjectBar"></div></div>
                 <span id="activeSubjectStat">0 / 0 &middot; 0%</span>
               </div>
             </div>
-
-            <!-- Bulk add form -->
             <div class="bulk-add">
               <h3>Add chapter ka syllabus</h3>
               <div class="bulk-row">
                 <input type="text" id="chapterNameInput" placeholder="Chapter name — e.g. Matrices">
               </div>
               <div class="bulk-row">
-                <textarea id="bulkTopicsInput" rows="3" placeholder="Topics comma-separated daalo — e.g. Eigen Values, Eigen Vectors, Cayley-Hamilton Theorem"></textarea>
+                <textarea id="bulkTopicsInput" rows="3" placeholder="Topics comma-separated daalo — e.g. Eigen Values, Eigen Vectors"></textarea>
               </div>
               <button class="primary-btn" id="addChapterBtn">Add Chapter</button>
             </div>
-
-            <!-- Chapters + checkbox topic lists -->
-            <div class="chapter-list" id="chapterList">
-              <!-- JS injects chapters and topic checkboxes -->
-            </div>
+            <div class="chapter-list" id="chapterList"></div>
           </div>
-
         </div>
       </div>
     </section>
 
     <!-- ---------- TAB: EXAMS ---------- -->
     <section class="tab-panel" id="tab-exams">
-
       <header class="panel-head">
         <h1>Exams &amp; Deadlines</h1>
         <p class="sub">Exam date do, uska syllabus select karo — countdown aur readiness khud calculate hoga.</p>
       </header>
-
       <div class="exam-add">
         <div class="exam-add-row">
           <input type="text" id="examNameInput" placeholder="Exam name — e.g. Mid Sem 1">
@@ -185,19 +205,17 @@
         </div>
         <p class="hint">Exam add hone ke baad uska syllabus (topics) neeche select karna hoga.</p>
       </div>
-
       <div class="exam-list" id="examList">
-        <!-- JS injects exam cards with countdown + syllabus picker -->
         <p class="empty-hint">Abhi koi exam set nahi hai.</p>
       </div>
-
     </section>
 
   </main>
 </div>
 
-<!-- Chart.js for daily/weekly/monthly progress graph -->
+<!-- Scripts -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="supabase-client.js"></script>
 <script src="sagar.js"></script>
 </body>
 </html>
